@@ -3,12 +3,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 
 const STYLE_PRESETS = [
-  { id: 'buzz', name: 'Buzz Cut', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Buzz Cut (cắt cua) cực ngắn, nam tính, phong cách lính thủy đánh bộ.' },
-  { id: 'undercut', name: 'Undercut', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Undercut, hai bên cạo sát, phần trên vuốt ngược ra sau bóng mượt.' },
-  { id: 'korean_sidepart', name: 'Side Part Hàn Quốc', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Side Part phong cách Hàn Quốc, tóc rủ tự nhiên, có độ phồng nhẹ, trông lãng tử và trẻ trung.' },
-  { id: 'sidepart', name: 'Side Part', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Side Part 7/3 cổ điển, lịch lãm, phù hợp quý ông.' },
-  { id: 'mullet', name: 'Mullet', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Mullet hiện đại, phần gáy dài sành điệu, phong cách nghệ sĩ.' },
-  { id: 'mohawk', name: 'Mohawk', prompt: 'Chỉnh sửa ảnh để người trong ảnh có kiểu tóc Mohawk phá cách, dựng đứng ở giữa, hai bên cạo trắng.' }
+  { id: 'buzz', name: 'Buzz Cut', prompt: 'Sharp buzz cut, skin fade sides, very short top.' },
+  { id: 'undercut', name: 'Undercut', prompt: 'Classic undercut with long textured top swept back.' },
+  { id: 'pompadour', name: 'Pompadour', prompt: 'Modern pompadour hairstyle, high volume, clean sides.' },
+  { id: 'korean', name: 'Korean Wave', prompt: 'Korean style soft wavy hair with natural side part.' }
 ];
 
 enum ConsultantTab {
@@ -17,14 +15,50 @@ enum ConsultantTab {
 }
 
 const StyleConsultant: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<ConsultantTab>(ConsultantTab.SIMULATION);
+  const [activeTab, setActiveTab] = useState<ConsultantTab>(ConsultantTab.ADVICE);
   const [prompt, setPrompt] = useState('');
   const [image, setImage] = useState<string | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [recommendation, setRecommendation] = useState('');
-  const [suggestedStyles, setSuggestedStyles] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
+  const [hasKey, setHasKey] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Kiểm tra trạng thái Key từ môi trường AI Studio
+  useEffect(() => {
+    const checkKey = async () => {
+      // Trong môi trường preview, hasSelectedApiKey giúp kiểm tra xem dev đã chọn key chưa
+      if (window.aistudio && window.aistudio.hasSelectedApiKey) {
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasKey(selected);
+      } else if (process.env.API_KEY) {
+        // Trong môi trường Production thật (Vercel/Netlify), API_KEY sẽ được tiêm qua process.env
+        setHasKey(true);
+      }
+    };
+    checkKey();
+    const interval = setInterval(checkKey, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (cooldown > 0) {
+      const timer = setTimeout(() => setCooldown(cooldown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [cooldown]);
+
+  const handleOpenKey = async () => {
+    if (window.aistudio && window.aistudio.openSelectKey) {
+      setErrorStatus(null);
+      await window.aistudio.openSelectKey();
+      setHasKey(true);
+    } else {
+      alert("Để tính năng AI hoạt động trong Production, hãy cấu hình biến môi trường API_KEY trong Hosting của bạn.");
+    }
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -33,276 +67,235 @@ const StyleConsultant: React.FC = () => {
       reader.onloadend = () => {
         setImage(reader.result as string);
         setGeneratedImage(null);
-        setRecommendation('');
-        setSuggestedStyles([]);
+        setErrorStatus(null);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const runSimulation = async (styleName: string) => {
-    if (!image) return;
+  const handleSimulation = async (stylePrompt: string) => {
+    if (!image || cooldown > 0) return;
+    
+    // Luôn lấy API_KEY từ process.env. Không hardcode chuỗi trực tiếp để tránh lỗi bảo mật/CSP
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+      setErrorStatus("Lỗi: Không tìm thấy API Key. Hãy nhấn 'CẤU HÌNH AI' để tiếp tục.");
+      handleOpenKey();
+      return;
+    }
+
     setLoading(true);
+    setErrorStatus(null);
     setGeneratedImage(null);
-    setActiveTab(ConsultantTab.SIMULATION); // Chuyển về tab mô phỏng để người dùng thấy kết quả ảnh
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey });
       const base64Data = image.split(',')[1];
       
+      // Sử dụng model Pro cho chất lượng ảnh cao hơn nếu có key cá nhân
+      const modelName = 'gemini-3-pro-image-preview';
+
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: modelName,
         contents: {
           parts: [
             { inlineData: { data: base64Data, mimeType: 'image/png' } },
-            { text: `Chỉnh sửa ảnh chân dung này. Áp dụng kiểu tóc "${styleName}" lên khuôn mặt người trong ảnh một cách tự nhiên và sành điệu nhất.` }
+            { text: `Professional barber simulation. Apply a ${stylePrompt} hairstyle to this person. Black and white high-contrast editorial photography style. Ensure natural integration.` }
           ],
         },
+        config: { 
+          imageConfig: { aspectRatio: "1:1", imageSize: "1K" }
+        }
       });
 
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          setGeneratedImage(`data:image/png;base64,${part.inlineData.data}`);
-        }
+      const imagePart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (imagePart) {
+        setGeneratedImage(`data:image/png;base64,${imagePart.inlineData.data}`);
+      } else {
+        throw new Error("Không nhận được dữ liệu hình ảnh từ AI. Hãy thử lại.");
       }
-    } catch (error) {
-      console.error("Simulation Error:", error);
+    } catch (error: any) {
+      handleError(error);
     } finally {
       setLoading(false);
     }
   };
 
-  const processAI = async (customPrompt?: string) => {
-    const finalPrompt = customPrompt || prompt;
-    if (!image && !finalPrompt.trim()) return;
+  const handleAdvice = async () => {
+    const apiKey = process.env.API_KEY;
+    if (cooldown > 0 || (!prompt && !image) || !apiKey) return;
     
     setLoading(true);
+    setErrorStatus(null);
     setRecommendation('');
-    setGeneratedImage(null);
-    setSuggestedStyles([]);
-    
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      const base64Data = image ? image.split(',')[1] : null;
+      const ai = new GoogleGenAI({ apiKey });
+      const parts: any[] = [
+        { text: "Bạn là chuyên gia Barber tư vấn phong cách. Trả lời bằng tiếng Việt, ngắn gọn, cá tính, tập trung vào form tóc và khuôn mặt khách hàng trong ảnh (nếu có)." }
+      ];
 
-      if (activeTab === ConsultantTab.SIMULATION) {
-        if (!image) {
-          setRecommendation("Vui lòng tải ảnh lên để thực hiện mô phỏng.");
-          setLoading(false);
-          return;
-        }
+      if (image) parts.push({ inlineData: { data: image.split(',')[1], mimeType: 'image/png' } });
+      if (prompt) parts.push({ text: prompt });
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash-image',
-          contents: {
-            parts: [
-              { inlineData: { data: base64Data!, mimeType: 'image/png' } },
-              { text: `${finalPrompt}. Hãy tạo ra một hình ảnh mới dựa trên khuôn mặt này nhưng với kiểu tóc đã yêu cầu.` }
-            ],
-          },
-        });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: { parts }
+      });
 
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            setGeneratedImage(`data:image/png;base64,${part.inlineData.data}`);
-          } else if (part.text) {
-            setRecommendation(prev => prev + part.text);
-          }
-        }
-      } else {
-        // TAB 2: DEEP CONSULTATION
-        const parts: any[] = [
-          { text: "Bạn là chuyên gia tư vấn tóc. Hãy phân tích khuôn mặt khách hàng và đưa ra lời khuyên. QUAN TRỌNG: Ở cuối câu trả lời, hãy liệt kê tối đa 3 kiểu tóc phù hợp nhất theo định dạng: [TAGS: Tên kiểu 1, Tên kiểu 2, Tên kiểu 3]. Đừng quên phần [TAGS: ...] này vì nó giúp hệ thống tạo nút bấm cho người dùng." }
-        ];
-
-        if (image) {
-          parts.push({ inlineData: { data: base64Data!, mimeType: 'image/png' } });
-        }
-        if (finalPrompt) {
-          parts.push({ text: "Yêu cầu bổ sung của khách: " + finalPrompt });
-        }
-
-        const response = await ai.models.generateContent({
-          model: 'gemini-3-pro-preview',
-          contents: { parts },
-          config: {
-            systemInstruction: "Bạn là Stylist Gâu Barber. Trả lời sành điệu, chuyên nghiệp.",
-          }
-        });
-
-        const fullText = response.text || '';
-        
-        // Trích xuất tags
-        const tagMatch = fullText.match(/\[TAGS:\s*(.*?)\]/);
-        if (tagMatch && tagMatch[1]) {
-          const tags = tagMatch[1].split(',').map(t => t.trim());
-          setSuggestedStyles(tags);
-          // Loại bỏ phần tag khỏi text hiển thị cho đẹp
-          setRecommendation(fullText.replace(/\[TAGS:.*?\]/, '').trim());
-        } else {
-          setRecommendation(fullText);
-        }
-      }
-    } catch (error) {
-      console.error("Gemini Error:", error);
-      setRecommendation('Có lỗi xảy ra. Vui lòng thử lại.');
+      setRecommendation(response.text || 'Barber AI đang bận, vui lòng thử lại.');
+    } catch (error: any) {
+      handleError(error);
     } finally {
       setLoading(false);
     }
   };
 
-  const clearImage = () => {
-    setImage(null);
-    setGeneratedImage(null);
-    setRecommendation('');
-    setSuggestedStyles([]);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+  const handleError = (error: any) => {
+    const message = error.message || '';
+    console.error("AI Error Detailed:", error);
+
+    if (message.includes('400') || message.includes('API key not valid')) {
+      setErrorStatus('LỖI 400: Key bạn dán (hardcode) không được hệ thống chấp nhận. Vui lòng xóa code dán đè và dùng nút "CHỌN KEY" để hệ thống tự cấu hình.');
+      setHasKey(false);
+    } else if (message.includes('429')) {
+      setErrorStatus('LỖI 429: Hết hạn mức (Quota). Vui lòng đợi 60 giây hoặc sử dụng Key từ dự án có Billing.');
+      setCooldown(60);
+    } else {
+      setErrorStatus(`Lỗi: ${message.substring(0, 100)}`);
+    }
   };
 
   return (
-    <div className="border-t-2 border-dashed border-black pt-12 mt-12">
-      <div className="max-w-3xl mx-auto border border-black bg-white relative">
-        <div className="absolute top-0 right-0 bg-black text-white text-[9px] uppercase tracking-widest px-3 py-1 font-bold z-10">
-          AI BARBER STUDIO
-        </div>
-
-        <div className="flex border-b border-black">
-          <button
-            onClick={() => { setActiveTab(ConsultantTab.SIMULATION); setRecommendation(''); setGeneratedImage(null); setSuggestedStyles([]); }}
-            className={`flex-1 py-4 text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${activeTab === ConsultantTab.SIMULATION ? 'bg-black text-white' : 'hover:bg-gray-100'}`}
-          >
-            Mô Phỏng Kiểu Tóc
-          </button>
-          <button
-            onClick={() => { setActiveTab(ConsultantTab.ADVICE); setRecommendation(''); setGeneratedImage(null); setSuggestedStyles([]); }}
-            className={`flex-1 py-4 text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${activeTab === ConsultantTab.ADVICE ? 'bg-black text-white' : 'hover:bg-gray-100'}`}
-          >
-            Tư Vấn Chuyên Sâu
-          </button>
-        </div>
+    <div className="mt-16 border-t border-black pt-12 mb-20">
+      <div className="max-w-4xl mx-auto space-y-8">
         
-        <div className="p-8 space-y-8">
-          <div className="animate-in fade-in duration-300">
-            <h3 className="text-lg font-black uppercase mb-2">
-              {activeTab === ConsultantTab.SIMULATION ? 'Thử Tóc Ảo' : 'Phân Tích Đặc Điểm'}
-            </h3>
-            <p className="text-[10px] opacity-60 mb-6 uppercase tracking-wider">
-              {activeTab === ConsultantTab.SIMULATION 
-                ? 'Tải ảnh và chọn kiểu tóc để AI mô phỏng diện mạo mới.' 
-                : 'AI phân tích khuôn mặt để đưa ra lựa chọn hoàn hảo nhất.'}
-            </p>
+        {/* Banner hướng dẫn Key cho Production */}
+        {!hasKey && (
+          <div className="bg-black text-white p-6 border-2 border-black flex flex-col md:flex-row items-center justify-between gap-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,0.1)]">
+            <div className="flex-1">
+              <h3 className="text-sm font-black uppercase tracking-widest mb-2">Cấu hình Production AI</h3>
+              <p className="text-[10px] opacity-70 uppercase leading-relaxed">
+                Để khách hàng sử dụng được AI, bạn không nên dán key vào code (bị chặn do CSP). 
+                Hãy thiết lập biến <code className="bg-white/20 px-1">API_KEY</code> trong cài đặt Hosting của bạn.
+              </p>
+            </div>
+            <button 
+              onClick={handleOpenKey}
+              className="bg-white text-black px-10 py-4 text-xs font-black uppercase tracking-widest hover:invert transition-all active:scale-95"
+            >
+              Cấu Hình Ngay
+            </button>
           </div>
-          
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="flex flex-col items-center justify-center border-2 border-dashed border-gray-200 p-2 min-h-[250px] relative group bg-gray-50/30">
-                {image ? (
-                  <div className="relative w-full h-full overflow-hidden">
-                    <img src={image} alt="Original" className="w-full h-64 object-cover border border-black grayscale-[30%]" />
-                    <p className="absolute bottom-1 left-1 bg-black text-white text-[8px] px-2 py-0.5 uppercase">Ảnh của bạn</p>
-                    <button onClick={clearImage} className="absolute top-1 right-1 bg-black text-white p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => fileInputRef.current?.click()} className="text-[10px] uppercase font-bold opacity-40 hover:opacity-100 flex flex-col items-center gap-3">
-                    <div className="w-12 h-12 rounded-full border border-black flex items-center justify-center">
-                      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/><path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/></svg>
-                    </div>
-                    Tải ảnh chân dung
-                  </button>
-                )}
-              </div>
+        )}
 
-              <div className="flex flex-col items-center justify-center border-2 border-black p-2 min-h-[250px] relative bg-black/5">
-                {generatedImage ? (
-                  <div className="relative w-full h-full">
-                    <img src={generatedImage} alt="AI Result" className="w-full h-64 object-cover border border-black" />
-                    <p className="absolute bottom-1 left-1 bg-black text-white text-[8px] px-2 py-0.5 uppercase animate-pulse">Kết quả mô phỏng</p>
-                  </div>
-                ) : (
-                  <div className="text-center px-6">
-                    {loading ? (
-                      <div className="space-y-4">
-                        <div className="w-10 h-10 border-2 border-black border-t-transparent rounded-full animate-spin mx-auto"></div>
-                        <p className="text-[10px] uppercase font-black tracking-widest animate-pulse">Barber AI Đang xử lý...</p>
-                      </div>
-                    ) : (
-                      <p className="text-[9px] uppercase tracking-widest opacity-30">
-                        {activeTab === ConsultantTab.SIMULATION 
-                          ? 'Ảnh mô phỏng sẽ xuất hiện tại đây' 
-                          : 'Hãy gửi ảnh để nhận phân tích chuyên sâu'}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
+        <div className="flex flex-col md:flex-row gap-10">
+          <div className="flex-1 space-y-8">
+            <div className="flex border-b-2 border-black">
+              <button 
+                onClick={() => setActiveTab(ConsultantTab.ADVICE)}
+                className={`flex-1 py-4 text-[10px] font-black uppercase tracking-[0.3em] transition-all ${activeTab === ConsultantTab.ADVICE ? 'bg-black text-white' : 'opacity-40'}`}
+              >
+                Tư Vấn
+              </button>
+              <button 
+                onClick={() => setActiveTab(ConsultantTab.SIMULATION)}
+                className={`flex-1 py-4 text-[10px] font-black uppercase tracking-[0.3em] transition-all ${activeTab === ConsultantTab.SIMULATION ? 'bg-black text-white' : 'opacity-40'}`}
+              >
+                Mô Phỏng
+              </button>
             </div>
 
-            <div className="space-y-4">
-              {activeTab === ConsultantTab.SIMULATION && (
-                <div className="flex flex-wrap gap-2 pt-2">
-                  {STYLE_PRESETS.map((style) => (
+            {errorStatus && (
+              <div className="bg-red-50 border-l-4 border-red-600 p-5">
+                <p className="text-[10px] font-black uppercase text-red-700">{errorStatus}</p>
+                {cooldown > 0 && <p className="text-[9px] mt-2 font-mono">Thử lại sau: {cooldown}s</p>}
+              </div>
+            )}
+
+            <div className="space-y-6">
+              <div 
+                onClick={() => !loading && fileInputRef.current?.click()}
+                className={`aspect-square md:aspect-video border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all relative overflow-hidden ${image ? 'border-black' : 'border-gray-300 bg-gray-50'}`}
+              >
+                {image ? (
+                  <img src={image} className="w-full h-full object-cover grayscale" alt="Input" />
+                ) : (
+                  <div className="text-center p-10">
+                    <div className="text-4xl font-thin mb-4">+</div>
+                    <p className="text-[10px] font-black uppercase tracking-widest">Tải ảnh chân dung</p>
+                  </div>
+                )}
+                {loading && (
+                  <div className="absolute inset-0 bg-white/95 flex flex-col items-center justify-center z-20">
+                    <div className="w-10 h-10 border-2 border-black border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p className="text-[9px] font-black uppercase tracking-[0.3em]">Barber AI Processing...</p>
+                  </div>
+                )}
+              </div>
+              <input type="file" ref={fileInputRef} hidden accept="image/*" onChange={handleImageChange} />
+
+              {activeTab === ConsultantTab.ADVICE ? (
+                <div className="flex flex-col gap-4">
+                  <textarea 
+                    placeholder="Mô tả phong cách mong muốn..."
+                    className="w-full border-2 border-black p-4 text-xs font-bold uppercase focus:outline-none focus:bg-gray-50 min-h-[100px] resize-none"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                  />
+                  <button 
+                    disabled={loading || cooldown > 0}
+                    onClick={handleAdvice}
+                    className="bg-black text-white py-5 text-[10px] font-black uppercase tracking-[0.3em] hover:opacity-90 disabled:opacity-20 transition-all shadow-[6px_6px_0px_0px_rgba(0,0,0,0.1)]"
+                  >
+                    Gửi Yêu Cầu
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {STYLE_PRESETS.map(style => (
                     <button
                       key={style.id}
-                      onClick={() => processAI(style.prompt)}
-                      disabled={loading || !image}
-                      className="px-4 py-2 border border-black text-[9px] font-black uppercase tracking-widest hover:bg-black hover:text-white transition-all disabled:opacity-20"
+                      disabled={loading || !image || cooldown > 0}
+                      onClick={() => handleSimulation(style.prompt)}
+                      className="border-2 border-black py-5 text-[9px] font-black uppercase tracking-widest hover:bg-black hover:text-white transition-all disabled:opacity-10 active:translate-y-1"
                     >
                       {style.name}
                     </button>
                   ))}
                 </div>
               )}
-
-              <div className="flex gap-2">
-                <input 
-                  type="text"
-                  className="flex-1 border border-black px-4 py-4 text-xs font-medium focus:outline-none placeholder-gray-400"
-                  placeholder={activeTab === ConsultantTab.SIMULATION ? "Mô tả kiểu tóc khác bạn muốn..." : "Nói thêm về phong cách của bạn (văn phòng, nghệ thuật...)"}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && processAI()}
-                />
-                <button 
-                  onClick={() => processAI()}
-                  disabled={loading || (!prompt.trim() && !image)}
-                  className="bg-black text-white px-8 py-4 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-gray-800 disabled:opacity-50 transition-colors"
-                >
-                  {activeTab === ConsultantTab.SIMULATION ? 'Thử Ngay' : 'Phân Tích'}
-                </button>
-              </div>
             </div>
-            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageChange} />
           </div>
 
-          {recommendation && (
-            <div className="mt-8 p-8 bg-black text-white animate-in slide-in-from-bottom-4 duration-500">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-2 h-2 bg-white rounded-full"></div>
-                <h4 className="text-[10px] font-black uppercase tracking-[0.3em]">Kết quả từ Chuyên Gia AI</h4>
-              </div>
-              <p className="text-sm leading-relaxed font-light opacity-90 whitespace-pre-wrap mb-6">{recommendation}</p>
-              
-              {suggestedStyles.length > 0 && (
-                <div className="pt-6 border-t border-white/20">
-                  <p className="text-[9px] uppercase tracking-widest opacity-60 mb-3">Thử ngay các kiểu tóc được gợi ý:</p>
-                  <div className="flex flex-wrap gap-2">
-                    {suggestedStyles.map((style, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => runSimulation(style)}
-                        disabled={loading || !image}
-                        className="px-4 py-2 bg-white text-black text-[9px] font-black uppercase tracking-widest hover:bg-gray-200 transition-all disabled:opacity-30"
-                      >
-                        Mô phỏng: {style}
-                      </button>
-                    ))}
-                  </div>
+          <div className="flex-1 bg-white border-4 border-black p-10 min-h-[500px] flex flex-col shadow-[16px_16px_0px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-center text-[10px] font-black uppercase tracking-[0.6em] mb-10 pb-4 border-b border-black/10">Result Window</h3>
+            
+            <div className="flex-1 overflow-y-auto">
+              {activeTab === ConsultantTab.SIMULATION && generatedImage ? (
+                <div className="space-y-8 animate-in zoom-in-95 duration-700">
+                  <img src={generatedImage} className="w-full border-2 border-black grayscale" alt="Result" />
+                  <p className="text-[9px] uppercase tracking-widest opacity-40 text-center">Bản phác thảo phong cách AI</p>
+                </div>
+              ) : recommendation ? (
+                <div className="animate-in fade-in slide-in-from-bottom-6 duration-500">
+                  <p className="text-sm leading-relaxed font-bold uppercase tracking-tight italic border-l-4 border-black pl-6">
+                    {recommendation}
+                  </p>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center opacity-10 text-center grayscale py-20">
+                  <div className="w-16 h-16 border-2 border-black mb-8 flex items-center justify-center font-black text-xl">B&W</div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.4em]">Ready for request</p>
                 </div>
               )}
             </div>
-          )}
+
+            <div className="mt-10 pt-6 border-t border-black/10 flex justify-between items-end opacity-30">
+                <span className="text-[8px] font-black uppercase tracking-widest">Powered by Gemini Pro</span>
+                <span className="text-[8px] font-black uppercase tracking-widest">B&W Studio Production</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
