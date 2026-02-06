@@ -1,0 +1,8 @@
+
+{
+  "name": "BarberB&W - Minimalist Booking",
+  "description": "A sleek, black-and-white minimalist barber booking platform for both customers and owners, featuring AI style consultations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
