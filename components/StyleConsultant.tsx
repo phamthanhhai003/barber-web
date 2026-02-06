@@ -97,7 +97,7 @@ const StyleConsultant: React.FC = () => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [
-        { text: "Bạn là thợ cắt tóc chuyên nghiệp. Phân tích ảnh và yêu cầu, tư vấn ngắn gọn 1-2 câu bằng tiếng Việt. Phong cách tối giản." }
+        { text: "Bạn là Thợ sáng tạo kiểu tóc của Gâu Barber. Hãy phân tích ảnh khuôn mặt và yêu cầu của khách hàng. Trả lời bằng tiếng Việt theo phong cách năng động, trẻ trung mang dáng dấp boy phố. Nội dung tư vấn bắt đầu bằng lời chào đến từ Gâu barber cần có chiều sâu bao gồm: 1. Nhận xét về cấu trúc khuôn mặt. 2. Kiểu tóc đề xuất cụ thể. 3. Gợi ý sản phẩm tạo kiểu." }
       ];
 
       if (image) parts.push({ inlineData: { data: image.split(',')[1], mimeType: 'image/png' } });
