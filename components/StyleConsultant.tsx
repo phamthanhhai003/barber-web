@@ -1,16 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { HfInference } from '@huggingface/inference';
-
-// Khởi tạo Hugging Face (Dùng cho tạo ảnh)
-// Lưu ý: Trong thực tế hãy dùng process.env.REACT_APP_HF_API_KEY
-const hf = new HfInference(process.env.REACT_APP_HF_API_KEY); 
 
 const STYLE_PRESETS = [
-  { id: 'buzz', name: 'Buzz Cut', prompt: 'Very short buzz cut, high skin fade on sides, clean buzzed top, sharp hairline, high contrast black and white photography.' },
-  { id: 'undercut', name: 'Undercut', prompt: 'Modern slicked back undercut, sharp shaved sides, long textured top, professional hair studio style, black and white.' },
-  { id: 'pompadour', name: 'Pompadour', prompt: 'Classic pompadour hairstyle, high volume top, tapered sides, clean grooming, high contrast black and white.' },
-  { id: 'mullet', name: 'Modern Mullet', prompt: 'Modern wolf cut mullet, short messy top, long back, edgy editorial style, black and white portrait.' }
+  { id: 'buzz', name: 'Buzz Cut', prompt: 'Very short buzz cut, high skin fade on sides, clean buzzed top, sharp hairline, black and white photography.' },
+  { id: 'undercut', name: 'Undercut', prompt: 'Slicked back undercut, shaved sides, long textured top, professional barber style, black and white.' },
+  { id: 'pompadour', name: 'Pompadour', prompt: 'Classic pompadour hairstyle, high volume top, tapered sides, clean look, high contrast black and white.' },
+  { id: 'mullet', name: 'Modern Mullet', prompt: 'Modern wolf cut mullet, short messy top, long back, edgy style, black and white portrait.' }
 ];
 
 enum ConsultantTab {
@@ -35,53 +30,63 @@ const StyleConsultant: React.FC = () => {
       reader.onloadend = () => {
         setImage(reader.result as string);
         setGeneratedImage(null);
-        setRecommendation('');
         setErrorStatus(null);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  // --- PHẦN SỬA CHÍNH: SIMULATION SỬ DỤNG HUGGING FACE ---
   const handleSimulation = async (stylePrompt: string) => {
     if (!image) {
-      setErrorStatus("VUI LÒNG TẢI ẢNH CHÂN DUNG CỦA BẠN LÊN TRƯỚC.");
+      setErrorStatus("BẠN PHẢI TẢI ẢNH LÊN Ở BƯỚC 1.");
       return;
     }
-
+  
     setLoading(true);
     setErrorStatus(null);
     setGeneratedImage(null);
-
+  
     try {
-      // 1. Chuyển đổi base64 sang Blob
-      const responseImg = await fetch(image);
-      const blob = await responseImg.blob();
-
-      // 2. Gọi model Stable Diffusion (Image-to-Image)
-      // Model gợi ý: 'runwayml/stable-diffusion-v1-5' là model ổn định và miễn phí
-      const result = await hf.imageToImage({
-        model: 'CompVis/stable-diffusion-v-1-4-original',
-        inputs: blob,
-        parameters: {
-          prompt: `A professional black and white studio portrait of a man, ${stylePrompt}, hyper-realistic hair, cinematic lighting, 8k resolution`,
-          negative_prompt: "color, blurry, low quality, distorted face, extra fingers, cartoon",
-          strength: 0.55, // 0.55 giúp giữ lại nét mặt gốc nhưng thay đổi được tóc
-          guidance_scale: 7.5,
-        },
-      });
-
-      // 3. Chuyển kết quả Blob thành URL để hiển thị
-      const imageUrl = URL.createObjectURL(result);
+      // Chuyển base64 image thành binary
+      const base64Data = image.split(',')[1];
+      
+      // Tạo prompt kết hợp
+      const combinedPrompt = `Portrait photo transformation: ${stylePrompt}`;
+  
+      const response = await fetch(
+        "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix",
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.REACT_APP_HUGGING_FACE_API_KEY}`, // Lấy API key từ .env
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            inputs: combinedPrompt,
+            parameters: {
+              image: base64Data,
+            }
+          }),
+        }
+      );
+  
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API Error: ${response.status} - ${errorText}`);
+      }
+  
+      // Hugging Face trả về blob
+      const blob = await response.blob();
+      const imageUrl = URL.createObjectURL(blob);
       setGeneratedImage(imageUrl);
+  
     } catch (error: any) {
-      console.error("Simulation error:", error);
-      setErrorStatus(`LỖI GEN ẢNH: Model đang khởi động hoặc quá tải. Hãy đợi 30 giây rồi thử lại.`);
+      console.error(error);
+      setErrorStatus(`LỖI: ${error.message.substring(0, 150)}`);
     } finally {
       setLoading(false);
     }
   };
-
   const handleAdvice = async () => {
     if (!prompt && !image) return;
     
@@ -90,163 +95,170 @@ const StyleConsultant: React.FC = () => {
     setRecommendation('');
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
-
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [
-        { text: "Bạn là Giám đốc Sáng tạo kiểu tóc tại Barber B&W Studio. Hãy phân tích ảnh khuôn mặt và yêu cầu của khách hàng. Trả lời bằng tiếng Việt theo phong cách chuyên nghiệp, lịch lãm. Nội dung tư vấn cần có chiều sâu bao gồm: 1. Nhận xét về cấu trúc khuôn mặt. 2. Kiểu tóc đề xuất cụ thể. 3. Gợi ý sản phẩm tạo kiểu. Giữ câu trả lời súc tích trong khoảng 100-150 chữ." }
+        { text: "Bạn là thợ cắt tóc chuyên nghiệp. Phân tích ảnh và yêu cầu, tư vấn ngắn gọn 1-2 câu bằng tiếng Việt. Phong cách tối giản." }
       ];
 
       if (image) parts.push({ inlineData: { data: image.split(',')[1], mimeType: 'image/png' } });
       if (prompt) parts.push({ text: prompt });
 
-      const result = await model.generateContent({ contents: [{ role: "user", parts }] });
-      const response = await result.response;
-      setRecommendation(response.text());
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: { parts }
+      });
+
+      setRecommendation(response.text || 'Lỗi tư vấn.');
     } catch (error: any) {
-      console.error("Advice error:", error);
-      setErrorStatus("AI đang bận, vui lòng thử lại sau giây lát.");
+      setErrorStatus("Lỗi tư vấn AI. Kiểm tra kết nối.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="mt-24 border-t-2 border-black/10 pt-20 mb-32 font-sans">
-      <div className="max-w-5xl mx-auto">
-        <div className="text-center mb-16 space-y-4">
-          <h2 className="text-4xl font-black uppercase tracking-tighter">B&W AI Studio</h2>
-          <p className="text-[10px] uppercase tracking-[0.4em] opacity-40">Kiến tạo phong cách cá nhân bằng trí tuệ nhân tạo</p>
-        </div>
-
-        <div className="flex flex-col lg:flex-row gap-8 items-start">
-          {/* Left: Input Panel */}
-          <div className="w-full lg:w-1/3 space-y-8">
-            <div 
-              onClick={() => !loading && fileInputRef.current?.click()}
-              className={`aspect-square border-2 border-black relative overflow-hidden cursor-pointer transition-all hover:shadow-[10px_10px_0px_0px_rgba(0,0,0,1)] bg-gray-50 group ${image ? 'border-solid' : 'border-dashed opacity-60'}`}
-            >
-              {image ? (
-                <img src={image} className="w-full h-full object-cover grayscale group-hover:scale-105 transition-transform duration-700" alt="Source" />
-              ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
-                  <span className="text-4xl mb-2">＋</span>
-                  <span className="text-[10px] font-black uppercase tracking-widest">Tải ảnh chân dung</span>
-                </div>
-              )}
-              {loading && (
-                <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-50 text-white">
-                  <div className="w-10 h-10 border-2 border-white border-t-transparent rounded-full animate-spin mb-4"></div>
-                  <span className="text-[8px] font-black uppercase tracking-[0.3em] animate-pulse">Đang xử lý ảnh...</span>
-                </div>
-              )}
-            </div>
-            <input type="file" ref={fileInputRef} hidden accept="image/*" onChange={handleImageChange} />
-
-            <div className="border-2 border-black p-1 flex bg-white">
+    <div className="mt-24 border-t-4 border-black pt-20 mb-32">
+      <div className="max-w-4xl mx-auto space-y-16">
+        <div className="flex flex-col lg:flex-row gap-20">
+          <div className="flex-1 space-y-12">
+            <div className="flex border-4 border-black p-1.5 bg-gray-100 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
               <button 
                 onClick={() => setActiveTab(ConsultantTab.ADVICE)}
-                className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === ConsultantTab.ADVICE ? 'bg-black text-white' : 'opacity-40 hover:opacity-100'}`}
+                className={`flex-1 py-4 text-[11px] font-black uppercase tracking-widest transition-all ${activeTab === ConsultantTab.ADVICE ? 'bg-black text-white' : 'opacity-30 hover:opacity-100'}`}
               >
-                Tư vấn chuyên sâu
+                Tư Vấn
               </button>
               <button 
                 onClick={() => setActiveTab(ConsultantTab.SIMULATION)}
-                className={`flex-1 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === ConsultantTab.SIMULATION ? 'bg-black text-white' : 'opacity-40 hover:opacity-100'}`}
+                className={`flex-1 py-4 text-[11px] font-black uppercase tracking-widest transition-all ${activeTab === ConsultantTab.SIMULATION ? 'bg-black text-white' : 'opacity-30 hover:opacity-100'}`}
               >
-                Mô phỏng tóc
+                Mô Phỏng
               </button>
             </div>
 
-            <div className="space-y-4">
-              {activeTab === ConsultantTab.ADVICE ? (
-                <div className="space-y-4">
-                  <textarea 
-                    placeholder="Mô tả phong cách bạn yêu thích..."
-                    className="w-full border-2 border-black p-4 text-xs font-bold uppercase focus:outline-none bg-gray-50 min-h-[120px] resize-none"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                  />
-                  <button 
-                    disabled={loading || (!image && !prompt)}
-                    onClick={handleAdvice}
-                    className="w-full bg-black text-white py-4 text-[11px] font-black uppercase tracking-[0.4em] hover:invert transition-all disabled:opacity-20"
-                  >
-                    Gửi yêu cầu
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  {STYLE_PRESETS.map(style => (
-                    <button
-                      key={style.id}
-                      disabled={loading || !image}
-                      onClick={() => handleSimulation(style.prompt)}
-                      className="border-2 border-black p-3 text-[9px] font-black uppercase tracking-wider hover:bg-black hover:text-white transition-all disabled:opacity-20 text-center"
-                    >
-                      {style.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
             {errorStatus && (
-              <div className="p-4 bg-red-50 border-2 border-red-200 text-red-600 text-[9px] font-black uppercase">
-                {errorStatus}
+              <div className="bg-black text-white p-6 border-l-[12px] border-red-500">
+                <p className="text-[11px] font-black uppercase leading-relaxed">{errorStatus}</p>
               </div>
             )}
-          </div>
 
-          {/* Right: Display Panel */}
-          <div className="flex-1 w-full bg-white border-2 border-black p-8 md:p-12 min-h-[500px] flex flex-col shadow-[20px_20px_0px_0px_rgba(0,0,0,0.05)] relative">
-            <div className="flex items-center justify-between mb-12 opacity-20">
-              <span className="text-[8px] font-black uppercase tracking-[0.5em]">Studio Report v4.2</span>
-              <div className="flex gap-2">
-                <div className="w-1.5 h-1.5 bg-black rounded-full"></div>
-                <div className="w-1.5 h-1.5 bg-black rounded-full"></div>
+            <div className="space-y-12">
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-black text-white flex items-center justify-center font-black text-xs italic shadow-[3px_3px_0px_0px_rgba(0,0,0,0.2)]">1</div>
+                  <h4 className="text-[12px] font-black uppercase tracking-widest">Tải ảnh khuôn mặt</h4>
+                </div>
+                <div 
+                  onClick={() => !loading && fileInputRef.current?.click()}
+                  className={`relative group aspect-square md:aspect-video border-4 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all overflow-hidden ${image ? 'border-black bg-white' : 'border-gray-300 hover:border-black bg-gray-50'}`}
+                >
+                  {image ? (
+                    <img src={image} className="w-full h-full object-cover grayscale" alt="Input" />
+                  ) : (
+                    <div className="text-center p-12 opacity-30 group-hover:opacity-100 transition-opacity">
+                      <div className="text-7xl font-thin mb-4">＋</div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.4em]">Chọn ảnh chân dung</p>
+                    </div>
+                  )}
+                  {loading && (
+                    <div className="absolute inset-0 bg-white/95 flex flex-col items-center justify-center z-40">
+                      <div className="w-16 h-16 border-4 border-black border-t-transparent rounded-full animate-spin mb-6"></div>
+                      <p className="text-[12px] font-black uppercase tracking-[0.8em] animate-pulse">Barber AI Drawing...</p>
+                    </div>
+                  )}
+                </div>
+                <input type="file" ref={fileInputRef} hidden accept="image/*" onChange={handleImageChange} />
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-black text-white flex items-center justify-center font-black text-xs italic shadow-[3px_3px_0px_0px_rgba(0,0,0,0.2)]">2</div>
+                  <h4 className="text-[12px] font-black uppercase tracking-widest">Hành động AI</h4>
+                </div>
+                
+                {activeTab === ConsultantTab.ADVICE ? (
+                  <div className="flex flex-col gap-6">
+                    <textarea 
+                      placeholder="Mô tả phong cách mong muốn..."
+                      className="w-full border-4 border-black p-6 text-sm font-bold uppercase focus:outline-none bg-white min-h-[160px] resize-none shadow-[6px_6px_0px_0px_rgba(0,0,0,0.05)]"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                    />
+                    <button 
+                      disabled={loading}
+                      onClick={handleAdvice}
+                      className="bg-black text-white py-6 text-[13px] font-black uppercase tracking-[0.5em] hover:bg-white hover:text-black border-4 border-black transition-all shadow-[12px_12px_0px_0px_rgba(0,0,0,0.1)] active:shadow-none active:translate-y-2 active:translate-x-2 disabled:opacity-20"
+                    >
+                      Xác Nhận Tư Vấn
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {STYLE_PRESETS.map(style => (
+                      <button
+                        key={style.id}
+                        disabled={loading || !image}
+                        onClick={() => handleSimulation(style.prompt)}
+                        className="group relative border-4 border-black p-6 text-[11px] font-black uppercase tracking-widest hover:bg-black hover:text-white transition-all disabled:opacity-10 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-y-1 active:translate-x-1"
+                      >
+                        {style.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
+          </div>
 
-            <div className="flex-1 flex flex-col justify-center">
+          <div className="flex-1 bg-white border-8 border-black p-12 min-h-[650px] flex flex-col shadow-[40px_40px_0px_0px_rgba(0,0,0,1)] relative overflow-hidden">
+            <div className="absolute -top-10 -right-10 w-40 h-40 border-[20px] border-black/5 rounded-full"></div>
+            
+            <h3 className="text-center text-[14px] font-black uppercase tracking-[1.2em] mb-16 pb-8 border-b-4 border-black italic">Studio Result</h3>
+            
+            <div className="flex-1 flex flex-col items-center justify-center">
               {activeTab === ConsultantTab.SIMULATION && generatedImage ? (
-                <div className="space-y-8 animate-in fade-in zoom-in-95 duration-700">
-                  <div className="border-2 border-black p-2 bg-gray-100 shadow-xl">
-                    <img src={generatedImage} className="w-full grayscale border border-black/10" alt="Result" />
+                <div className="w-full space-y-12 animate-in zoom-in-95 duration-1000">
+                  <div className="p-4 border-4 border-black bg-gray-50 shadow-2xl relative">
+                    <img src={generatedImage} className="w-full border-2 border-black grayscale" alt="Result" />
+                    <div className="absolute top-8 left-8 bg-black text-white px-4 py-1.5 text-[10px] font-black uppercase tracking-widest skew-x-[-12deg]">New Style</div>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <p className="text-[10px] font-black uppercase tracking-widest italic opacity-40">Mô phỏng thực tế ảo</p>
-                    <a href={generatedImage} download="my-new-style.png" className="text-[9px] font-black uppercase border-b-2 border-black hover:opacity-50 transition-opacity">Tải xuống ảnh</a>
+                  <div className="text-center">
+                    <p className="text-[12px] font-black uppercase tracking-[0.4em] italic mb-4">Mẫu phác thảo của bạn đã sẵn sàng</p>
+                    <button className="text-[10px] font-black uppercase border-b-4 border-black pb-1 hover:opacity-40 transition-opacity">Lưu ảnh này</button>
                   </div>
                 </div>
               ) : recommendation ? (
-                <div className="animate-in fade-in slide-in-from-right-8 duration-700 space-y-8">
-                  <div className="space-y-6">
-                    <h3 className="text-2xl font-black uppercase tracking-tighter border-b-4 border-black inline-block pb-1">Lời khuyên chuyên gia</h3>
-                    <div className="text-sm md:text-base font-medium leading-relaxed uppercase tracking-tight space-y-4 whitespace-pre-wrap">
-                      {recommendation}
-                    </div>
+                <div className="w-full animate-in fade-in slide-in-from-bottom-12 duration-700">
+                  <div className="text-9xl font-serif mb-12 opacity-5 text-black leading-none italic">“</div>
+                  <div className="text-xl leading-loose font-bold uppercase tracking-tight italic border-l-[16px] border-black pl-12 mb-12 py-8 bg-gray-50">
+                    {recommendation}
                   </div>
+                  <div className="text-9xl font-serif text-right opacity-5 text-black leading-none italic">”</div>
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center text-center opacity-10 select-none space-y-8 py-20">
-                  <div className="w-32 h-32 border-4 border-black rounded-full flex items-center justify-center rotate-12">
-                     <span className="font-black text-4xl italic">B&W</span>
+                <div className="flex flex-col items-center justify-center text-center space-y-16 opacity-5 grayscale select-none">
+                  <div className="w-56 h-56 border-[12px] border-black rotate-45 flex items-center justify-center">
+                     <div className="-rotate-45 font-black text-8xl italic">AI</div>
                   </div>
-                  <div className="space-y-2">
-                    <p className="text-xs font-black uppercase tracking-[1em]">Awaiting</p>
-                    <p className="text-[9px] uppercase font-bold tracking-widest">Dữ liệu đang được chờ xử lý</p>
+                  <div className="space-y-6">
+                    <p className="text-[20px] font-black uppercase tracking-[1em]">NO DATA</p>
+                    <p className="text-[11px] uppercase font-bold max-w-[320px] leading-relaxed tracking-widest">
+                      Hãy thực hiện đầy đủ Bước 1 và Bước 2 để chuyên gia AI của chúng tôi bắt đầu kiến tạo phong cách cho bạn.
+                    </p>
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="mt-12 flex justify-between items-end opacity-20">
-              <div className="text-[8px] font-black uppercase leading-loose">
-                Design by B&W<br/>
-                Powered by Hugging Face & Gemini
-              </div>
-              <div className="text-4xl font-black italic tracking-tighter">AI.</div>
+            <div className="mt-20 pt-12 border-t-4 border-black flex justify-between items-end opacity-40">
+                <div className="space-y-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em]">Neural Studio Engine: Gemini 3 Pro</p>
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em]">Processing Resolution: 1024px</p>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-4 h-4 bg-black rounded-full animate-bounce"></div>
+                  <div className="w-4 h-4 bg-black rounded-full opacity-50"></div>
+                </div>
             </div>
           </div>
         </div>
