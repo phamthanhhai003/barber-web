@@ -11,7 +11,7 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode }) => {
   return (
     <header className="border-b-4 border-black py-8 px-4 md:px-12 flex flex-col md:flex-row items-center justify-between gap-8 bg-white sticky top-0 z-50">
       <div className="flex flex-col items-center md:items-start group cursor-default">
-        <h1 className="text-5xl font-black tracking-tighter uppercase leading-none group-hover:italic transition-all">Barber B&W</h1>
+        <h1 className="text-5xl font-black tracking-tighter uppercase leading-none group-hover:italic transition-all">Gâu Barber</h1>
         <div className="flex items-center gap-3 mt-2">
           <p className="text-[11px] tracking-[0.5em] uppercase opacity-40 font-black">Professional Studio</p>
           <span className="h-1.5 w-1.5 bg-black rounded-full animate-pulse"></span>
